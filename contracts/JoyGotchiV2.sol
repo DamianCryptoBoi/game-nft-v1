@@ -40,7 +40,7 @@ contract JoyGotchiV2 is QRNG, ERC721 {
     using FixedPointMathLib for uint256;
     using SafeMath for uint256;
 
-    uint public mintPrice = 2000 ether;
+    uint public mintPrice = 1 ether;
 
     enum Status {
         HAPPY,
@@ -62,21 +62,29 @@ contract JoyGotchiV2 is QRNG, ERC721 {
 
     uint256 public speciesCount;
 
-    struct evolution {
+    struct Evolution {
         string image;
         string name;
         uint256 attackWinRate;
         uint256 nextEvolutionLevel;
     }
 
-    struct species {
+    struct Species {
         uint256 id;
         uint256 genePoolNum;
     }
 
-    mapping(uint256 => species) public speciesList;
-    mapping(uint256 => mapping(uint256 => evolution)) public speciesToEvolutions;
-    mapping(uint256 => uint256) public maxEvolutionPhase;
+    struct SpeciesDefaultAttrs {
+        uint256 skinColor;
+        uint256 hornStyle;
+        uint256 wingStyle;
+    }
+
+    mapping(uint256 => Species) public speciesList;
+    mapping(uint256 => mapping(uint256 => Evolution)) public speciesToEvolutions;
+    mapping(uint256 => uint256) public speciesMaxEvolutionPhase;
+    mapping(uint256 => SpeciesDefaultAttrs) public speciesDefaultAttrs;
+
 
     
 
@@ -89,19 +97,18 @@ contract JoyGotchiV2 is QRNG, ERC721 {
     mapping(uint256 => uint256) public lastAttacked;
     mapping(uint256 => uint256) public stars;
     mapping(uint256 => uint256) public petSpecies;
-    mapping(uint256 => uint256) public petEyeColor;
+    mapping(uint256 => uint256) public petSex;
     mapping(uint256 => uint256) public petSkinColor;
     mapping(uint256 => uint256) public petHornStyle;
     mapping(uint256 => uint256) public petWingStyle;
     mapping(uint256 => uint256) public petEvolutionPhase;
+    mapping(uint256 => bool) public petHasParents;
+    mapping(uint256 => uint256[2]) public petParentsId;
     mapping(uint256 => bool) public petNeedsEvolutionItem;
     mapping(uint256 => uint256) public petEvolutionItemId;
     mapping(uint256 => bool) public petHasEvolutionItem;
     mapping(uint256 => uint256) public petShield;
 
-
-
- 
 
     // vritual staking
     mapping(uint256 => uint256) public ethOwed;
@@ -181,7 +188,7 @@ contract JoyGotchiV2 is QRNG, ERC721 {
     //////////////////////////////////////////////////////////////*/
 
     function mint() public {
-        require(_tokenIds < 20_000, "Over the limit");
+        // require(_tokenIds < 20_000, "Over the limit");
 
         token.burnFrom(msg.sender, mintPrice);
 
@@ -190,16 +197,13 @@ contract JoyGotchiV2 is QRNG, ERC721 {
 
         (   
             uint256 newPetSpecies,
-            uint256 newPetEyeColor,
-            uint256 newPetSkinColor,
-            uint256 newPetHornStyle,
-            uint256 newPetWingStyle
-        ) = genePool.generateRandomGene(msg.sender, _tokenIds, _getWalletSeedAndUpdateIfNeeded());
+            uint256 newPetSex
+        ) = genePool.generateGene(msg.sender, _tokenIds, _getWalletSeedAndUpdateIfNeeded());
         petSpecies[_tokenIds] = newPetSpecies;
-        petEyeColor[_tokenIds] = newPetEyeColor;
-        petSkinColor[_tokenIds] = newPetSkinColor;
-        petHornStyle[_tokenIds] = newPetHornStyle;
-        petWingStyle[_tokenIds] = newPetWingStyle;
+        petSkinColor[_tokenIds] = speciesDefaultAttrs[newPetSpecies].skinColor;
+        petHornStyle[_tokenIds] = speciesDefaultAttrs[newPetSpecies].hornStyle;
+        petWingStyle[_tokenIds] = speciesDefaultAttrs[newPetSpecies].wingStyle;
+        petSex[_tokenIds] = newPetSex;
 
         // mint NFT
         _mint(msg.sender, _tokenIds);
@@ -225,7 +229,7 @@ contract JoyGotchiV2 is QRNG, ERC721 {
         uint256 amount = itemPrice[itemId];
 
         // recalculate time until starving
-        timeUntilStarving[nftId] = block.timestamp + itemTimeExtension[itemId];
+        timeUntilStarving[nftId] +=  itemTimeExtension[itemId];
 
 
         if (petScore[nftId] > 0) {
@@ -259,7 +263,7 @@ contract JoyGotchiV2 is QRNG, ERC721 {
         uint256 _species = petSpecies[_nftId];
         uint256 _evolutionPhase = petEvolutionPhase[_nftId];
 
-        require(_evolutionPhase < maxEvolutionPhase[_species], "Max evolution phase reached");
+        require(_evolutionPhase < speciesMaxEvolutionPhase[_species], "Max evolution phase reached");
 
         uint256 evoLevel = speciesToEvolutions[_species][_evolutionPhase].nextEvolutionLevel;
 
@@ -373,12 +377,13 @@ contract JoyGotchiV2 is QRNG, ERC721 {
         require(_nftId != _nftId2, "Can't breed with yourself");
         require(isPetAlive(_nftId), "Pet1 is dead");
         require(isPetAlive(_nftId2), "Pet2 is dead");
+        require(petSex[_nftId] != petSex[_nftId2],"Same sex");
 
         uint256 species1 = petSpecies[_nftId];
         uint256 species2 = petSpecies[_nftId2];
 
-        require(petEvolutionPhase[_nftId] == maxEvolutionPhase[species1], "Pet1 not max evolution phase");
-        require(petEvolutionPhase[_nftId2] == maxEvolutionPhase[species2], "Pet2 not max evolution phase");
+        require(petEvolutionPhase[_nftId] == speciesMaxEvolutionPhase[species1], "Pet1 not max evolution phase");
+        require(petEvolutionPhase[_nftId2] == speciesMaxEvolutionPhase[species2], "Pet2 not max evolution phase");
 
 
         token.burnFrom(msg.sender, mintPrice);
@@ -387,24 +392,24 @@ contract JoyGotchiV2 is QRNG, ERC721 {
 
         uint256 _newPetSpecies = _random % 2 == 0 ? species1 : species2;
 
-        uint256 _newPetEyeColor = _random % genePool.eyeColorGeneNum();
-        uint256 _newPetSkinColor = _random % genePool.skinColorGeneNum();
-        uint256 _newPetHornStyle = _random % genePool.hornStyleGeneNum();
-        uint256 _newPetWingStyle = _random % genePool.wingStyleGeneNum();
+        uint256 _newPetSkinColor = (_random + 2) % genePool.skinColorGeneNum();
+        uint256 _newPetHornStyle = (_random + 3) % genePool.hornStyleGeneNum();
+        uint256 _newPetWingStyle = (_random + 4) % genePool.wingStyleGeneNum();
+        uint256 _newPetSex = (_random + 5) % 2;
+
+        petSpecies[_tokenIds] = _newPetSpecies;
+        petSkinColor[_tokenIds] = _newPetSkinColor;
+        petHornStyle[_tokenIds] = _newPetHornStyle;
+        petWingStyle[_tokenIds] = _newPetWingStyle;
+        petSex[_tokenIds] = _newPetSex;
+        petHasParents[_tokenIds];
+        petParentsId[_tokenIds] = [_nftId, _nftId2];
+        timeUntilStarving[_tokenIds] = block.timestamp + 1 days;
+        timePetBorn[_tokenIds] = block.timestamp;
 
         // mint NFT
         _mint(msg.sender, _tokenIds);
         _tokenIds++;
-
-        petSpecies[_tokenIds] = _newPetSpecies;
-        petEyeColor[_tokenIds] = _newPetEyeColor;
-        petSkinColor[_tokenIds] = _newPetSkinColor;
-        petHornStyle[_tokenIds] = _newPetHornStyle;
-        petWingStyle[_tokenIds] = _newPetWingStyle;
-
-        timeUntilStarving[_tokenIds] = block.timestamp + 1 days;
-        timePetBorn[_tokenIds] = block.timestamp;
-
     }
 
     function setPetName(
@@ -489,10 +494,10 @@ contract JoyGotchiV2 is QRNG, ERC721 {
         genes = string(
             abi.encodePacked(
                 _uint2str(petSpecies[_nftId]),
-                _uint2str(petEyeColor[_nftId]),
                 _uint2str(petSkinColor[_nftId]),
                 _uint2str(petHornStyle[_nftId]),
-                _uint2str(petWingStyle[_nftId])
+                _uint2str(petWingStyle[_nftId]),
+                _uint2str(petSex[_nftId])
             )
         );
     }
@@ -534,15 +539,35 @@ contract JoyGotchiV2 is QRNG, ERC721 {
     )external view returns (
         uint256 _species,
         uint256 _evolutionPhase,
+        uint256 _maxEvolutionPhase,
         string memory _image,
         string memory _speciesName,
         uint256 _attackWinRate
     ){
         _species = petSpecies[_nftId];
         _evolutionPhase = petEvolutionPhase[_nftId];
+        _maxEvolutionPhase = speciesMaxEvolutionPhase[petSpecies[_nftId]];
         _image = speciesToEvolutions[_species][_evolutionPhase].image;
         _speciesName = speciesToEvolutions[_species][_evolutionPhase].name;
         _attackWinRate = speciesToEvolutions[_species][_evolutionPhase].attackWinRate;
+    }
+
+    function getPetAttributes(
+        uint256 _nftId
+    ) public view returns (
+        uint256 _species,
+        uint256 _skinColor,
+        uint256 _hornStyle,
+        uint256 _wingStyle,
+        uint256 _sex,
+        uint256[2] memory _parentsId
+    ){
+        _species = petSpecies[_nftId];
+        _skinColor = petSkinColor[_nftId];
+        _hornStyle = petHornStyle[_nftId];
+        _wingStyle = petWingStyle[_nftId];
+        _sex = petSex[_nftId];
+        _parentsId = petParentsId[_nftId];
     }
 
     function getPetAttackWinrate (
@@ -680,21 +705,24 @@ contract JoyGotchiV2 is QRNG, ERC721 {
     }
 
     function createSpecies(
-        evolution[] memory _evolutions,
+        Evolution[] memory _evolutions,
         uint256 _genePoolNum,
         bool _needEvolutionItem,
-        uint256 _evolutionItemId
+        uint256 _evolutionItemId,
+        SpeciesDefaultAttrs memory _defaultAttrs
 
     ) external onlyOwner {
         uint speciesId = speciesCount;
-        speciesList[speciesCount] = species(speciesId,  _genePoolNum);
+        speciesList[speciesCount] = Species(speciesId,  _genePoolNum);
         for (uint256 i = 0; i < _evolutions.length; i++) {
             speciesToEvolutions[speciesId][i] = _evolutions[i];
         }
         petNeedsEvolutionItem[speciesId] = _needEvolutionItem;
         petEvolutionItemId[speciesId] = _evolutionItemId;
         
-        maxEvolutionPhase[speciesId] = _evolutions.length - 1;
+        speciesMaxEvolutionPhase[speciesId] = _evolutions.length - 1;
+        speciesDefaultAttrs[speciesId] = _defaultAttrs;
+
         genePool.addSpeciesToGenePool(speciesId, _genePoolNum);
         speciesCount++;
         emit SpeciesCreated(speciesId, _genePoolNum);
